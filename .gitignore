@@ -1,3 +1,6 @@
 /*
 !/.gitignore
 !/fontconfig/
+
+!/mpv/
+/mpv/watch_later/
