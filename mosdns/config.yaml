@@ -1,0 +1,116 @@
+# Powered by luoboQAQ
+log:
+  level: info
+  # file: ./log.txt
+
+plugins:
+  # 缓存插件
+  - tag: cache
+    type: cache
+    args:
+      size: 10240
+      lazy_cache_ttl: 86400
+      # 将缓存保存在磁盘
+      dump_file: ./cache.dump
+
+  # 转发至本地服务器的插件
+  - tag: forward_local
+    type: forward
+    args:
+      #concurrent: 2 # 并发请求
+      upstreams:
+        - tag: alidns_doh
+          addr: "https://dns.alidns.com/dns-query"
+          dial_addr: "223.5.5.5"
+        - tag: dnspod_doh
+          addr: "https://doh.pub/dns-query"
+            # dial_addr: "119.29.29.29"
+        
+
+  # 转发至远程服务器的插件
+  - tag: forward_remote
+    type: forward
+    args:
+      upstreams:
+        #- tag: easymosdns
+        #  addr: "https://doh.apad.pro/dns-query"
+        #  bootstrap: "223.5.5.5"
+        #- tag: dns_sb
+        #  addr: "https://45.11.45.11/dns-query"
+        #- tag: dns_google_v6
+        #  addr: "https://[2001:4860:4860::64]/dns-query"
+        - tag: dns_Cloudflare_v6
+          addr: "https://[2606:4700:4700::1001]/dns-query"
+
+  # fallback 用本地服务器 sequence
+  # 返回不包含本地 ip 则 reject
+  - tag: local_ip_sequence
+    type: sequence
+    args:
+      - exec: $forward_local
+      - matches: resp_ip &./data/CN-ip-cidr.txt
+        exec: accept
+      - exec: drop_resp # v5.1.2 以后不能用 reject
+
+  # fallback 用远程服务器 sequence
+  - tag: remote_sequence
+    type: sequence
+    args:
+      - exec: $forward_remote
+      # CloudFlare劫持到优选IP
+      #- matches: resp_ip &./data/cloudflare.txt
+      #  exec: black_hole 2606:4700:a0:6d:f68b:73c6:2a32:e656 2606:4700:3037:0:b9:2626:5f75:61ab
+      - exec: accept
+
+  # fallback插件
+  - tag: fallback
+    type: fallback
+    args:
+      primary: local_ip_sequence
+      secondary: remote_sequence
+      threshold: 500
+      always_standby: true
+
+  # 主要运行逻辑插件
+  - tag: main_sequence
+    type: sequence
+    args:
+      - matches: qtype 65
+        exec: reject 3
+
+      # 去广告
+      - matches: qname &./data/reject-list.txt
+        exec: reject 3
+      - matches: qname &./data/ad-domains.txt
+        exec: reject 3
+
+      - exec: prefer_ipv6
+
+      - exec: $cache
+      - matches: has_resp
+        exec: accept
+
+      # 匹配校园网域名，用本地DNS解析
+      - matches: qname yzu.edu.cn
+        exec: forward 221.131.143.69
+      - matches: has_resp
+        exec: accept
+
+      - matches: qname &./data/direct-list.txt
+        exec: $forward_local
+      - matches: has_resp
+        exec: accept
+    
+      - exec: $fallback
+
+  # 启动 udp服务器
+  - type: udp_server
+    args:
+      entry: main_sequence
+      listen: 127.0.0.1:53
+
+  - tag: udp_server_v6
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: "[::1]:53"
